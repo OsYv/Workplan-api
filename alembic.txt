@@ -1,0 +1,11 @@
+alembic
+
+alembic revision --autogenerate -m "beschreibung"
+alembic upgrade head
+
+
+
+sudo docker compose restart api
+
+
+sudo docker exec -it workplan_db psql -U app -d workplan
