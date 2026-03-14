@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import auth, time, exports, users, shift_types, shifts, reports, time_entry
+from app.routers import password_reset
 
 app = FastAPI(title="Workplan API")
 
@@ -25,7 +26,7 @@ app.include_router(shift_types.router, prefix="/shift-types", tags=["shift_types
 app.include_router(shifts.router, prefix="/shifts", tags=["shifts"])
 app.include_router(reports.router, prefix="/reports", tags=["reports"])
 app.include_router(time_entry.router, prefix="/time-entries", tags=["time_entries"])
-
+app.include_router(password_reset.router, prefix="/auth", tags=["auth"])
 
 @app.get("/health")
 def health():
