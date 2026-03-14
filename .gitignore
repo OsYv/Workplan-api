@@ -1,6 +1,11 @@
-# Secrets
+# Skripte die nicht ins Repo gehören
+create_admin.py
+
+# Secrets & Umgebungsvariablen
 .env
 .env.*
+.env.local
+.env.production
 
 # Datenbank
 postgres-data/
@@ -9,9 +14,23 @@ postgres-data/
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
 .venv/
 venv/
+env/
+*.egg-info/
+dist/
+build/
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

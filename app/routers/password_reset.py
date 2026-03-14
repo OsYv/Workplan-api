@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import secrets
 from datetime import datetime, timedelta
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import String, DateTime
+from sqlalchemy import String, DateTime, Boolean, Integer
 from sqlalchemy.orm import Session, Mapped, mapped_column
 
-from app.core.deps import get_db, get_current_user, require_admin
-from app.core.security import get_password_hash
+from app.core.config import settings
+from app.core.deps import get_db, require_admin
+from app.core.security import hash_password
 from app.db.base import Base
 from app.models.user import User
 
@@ -20,16 +20,7 @@ from email.mime.multipart import MIMEMultipart
 
 router = APIRouter()
 
-# ── Konfiguration ────────────────────────────────────────────────────────────
-
-SMTP_HOST = "smtp.oswald-it.ch"
-SMTP_PORT = 465
-SMTP_USER = "passwort@oswald-it.ch"
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")  # In .env auslagern!
-SMTP_FROM = "Workplan <passwort@oswald-it.ch>"
-
 RESET_TOKEN_EXPIRE_MINUTES = 60
-FRONTEND_URL = "https://workplan.oswald-it.ch"  # Deine Frontend-URL anpassen
 
 
 # ── Modell für Reset-Tokens ──────────────────────────────────────────────────
@@ -37,11 +28,11 @@ FRONTEND_URL = "https://workplan.oswald-it.ch"  # Deine Frontend-URL anpassen
 class PasswordResetToken(Base):
     __tablename__ = "password_reset_tokens"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column()
-    token: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    id:         Mapped[int]      = mapped_column(Integer, primary_key=True)
+    user_id:    Mapped[int]      = mapped_column(Integer)
+    token:      Mapped[str]      = mapped_column(String(128), unique=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    used: Mapped[bool] = mapped_column(default=False)
+    used:       Mapped[bool]     = mapped_column(Boolean, default=False)
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -49,11 +40,9 @@ class PasswordResetToken(Base):
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 
-
 class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
-
 
 class AdminSetPasswordRequest(BaseModel):
     new_password: str
@@ -64,14 +53,14 @@ class AdminSetPasswordRequest(BaseModel):
 def send_reset_email(to_email: str, reset_link: str, user_name: str):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = "Workplan – Passwort zurücksetzen"
-    msg["From"] = SMTP_FROM
-    msg["To"] = to_email
+    msg["From"]    = settings.SMTP_FROM
+    msg["To"]      = to_email
 
     text = f"""Hallo {user_name},
 
 Du hast eine Anfrage zum Zurücksetzen deines Passworts gestellt.
 
-Klicke auf folgenden Link um dein Passwort zurückzusetzen:
+Link zum Zurücksetzen:
 {reset_link}
 
 Dieser Link ist 60 Minuten gültig.
@@ -100,7 +89,9 @@ Workplan by Oswald-IT
       </a>
     </div>
     <p style="color: #64748b; font-size: 14px;">Dieser Link ist <strong>60 Minuten</strong> gültig.</p>
-    <p style="color: #64748b; font-size: 14px;">Falls du diese Anfrage nicht gestellt hast, kannst du diese E-Mail ignorieren.</p>
+    <p style="color: #64748b; font-size: 14px;">
+      Falls du diese Anfrage nicht gestellt hast, kannst du diese E-Mail ignorieren.
+    </p>
     <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;">
     <p style="color: #94a3b8; font-size: 12px; text-align: center;">Workplan by Oswald-IT</p>
   </div>
@@ -111,9 +102,9 @@ Workplan by Oswald-IT
     msg.attach(MIMEText(text, "plain", "utf-8"))
     msg.attach(MIMEText(html, "html", "utf-8"))
 
-    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
-        server.login(SMTP_USER, SMTP_PASSWORD)
-        server.sendmail(SMTP_USER, to_email, msg.as_string())
+    with smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+        server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        server.sendmail(settings.SMTP_USER, to_email, msg.as_string())
 
 
 # ── Endpunkte ────────────────────────────────────────────────────────────────
@@ -124,13 +115,13 @@ def forgot_password(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    """E-Mail mit Reset-Link senden. Gibt immer 200 zurück (kein User-Enumeration)."""
+    """E-Mail mit Reset-Link senden. Gibt immer 200 zurück (verhindert User-Enumeration)."""
     user = db.query(User).filter(
         User.email == payload.email.lower().strip()
     ).first()
 
     if user and user.is_active:
-        # Alte Token für diesen User löschen
+        # Alte offene Token für diesen User löschen
         db.query(PasswordResetToken).filter(
             PasswordResetToken.user_id == user.id,
             PasswordResetToken.used == False,  # noqa: E712
@@ -140,25 +131,21 @@ def forgot_password(
         token = secrets.token_urlsafe(48)
         expires = datetime.utcnow() + timedelta(minutes=RESET_TOKEN_EXPIRE_MINUTES)
 
-        reset_token = PasswordResetToken(
+        db.add(PasswordResetToken(
             user_id=user.id,
             token=token,
             expires_at=expires,
             used=False,
-        )
-        db.add(reset_token)
+        ))
         db.commit()
 
-        # Name für E-Mail
         user_name = (
             f"{(user.first_name or '').strip()} {(user.last_name or '').strip()}".strip()
             or user.name
             or user.email
         )
 
-        reset_link = f"{FRONTEND_URL}/passwort-reset?token={token}"
-
-        # E-Mail im Hintergrund senden
+        reset_link = f"{settings.FRONTEND_URL}/passwort-reset?token={token}"
         background_tasks.add_task(send_reset_email, user.email, reset_link, user_name)
 
     return {"ok": True, "message": "Falls die E-Mail-Adresse existiert, wurde ein Link gesendet."}
@@ -186,9 +173,12 @@ def reset_password(
         raise HTTPException(status_code=400, detail="Benutzer nicht gefunden")
 
     if len(payload.new_password) < 8:
-        raise HTTPException(status_code=400, detail="Passwort muss mindestens 8 Zeichen haben")
+        raise HTTPException(
+            status_code=400,
+            detail="Passwort muss mindestens 8 Zeichen haben",
+        )
 
-    user.password_hash = get_password_hash(payload.new_password)
+    user.password_hash = hash_password(payload.new_password)
     reset_token.used = True
     db.commit()
 
@@ -208,9 +198,12 @@ def admin_set_password(
         raise HTTPException(status_code=404, detail="Benutzer nicht gefunden")
 
     if len(payload.new_password) < 8:
-        raise HTTPException(status_code=400, detail="Passwort muss mindestens 8 Zeichen haben")
+        raise HTTPException(
+            status_code=400,
+            detail="Passwort muss mindestens 8 Zeichen haben",
+        )
 
-    user.password_hash = get_password_hash(payload.new_password)
+    user.password_hash = hash_password(payload.new_password)
     db.commit()
 
     return {"ok": True, "message": f"Passwort für {user.email} gesetzt"}
